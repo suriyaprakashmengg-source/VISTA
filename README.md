@@ -2,9 +2,6 @@
 
 **Semi-active suspension control simulation platform in Python** — quarter-car and half-car vehicle models, an industrially representative sampled-data control architecture, and a full controller design arc from digital PID to clipped LQR, benchmarked honestly against a validated passive baseline.
 
-![Passive vs Digital PID over the same bump](docs/media/vista_passive_vs_pid.gif)
-
-![Comfort vs road-holding Pareto front](docs/figures/v110_pareto_front.png)
 
 ## What this project demonstrates
 
