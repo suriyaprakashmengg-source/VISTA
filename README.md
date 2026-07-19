@@ -74,6 +74,4 @@ The full engineering narrative — modeling, architecture, every design study wi
 
 Full-car model (7-DOF, roll dynamics) · interactive parameter dashboard · model-predictive control (the constraint handling that clipping performs implicitly is what MPC optimizes explicitly).
 
-## License
 
-MIT
