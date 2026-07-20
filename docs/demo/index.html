@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VISTA — Real-Time Quarter-Car Bench</title>
+<style>
+  :root{
+    --bg:#0d1622; --panel:#13202f; --panel2:#0f1b2a; --line:#22374d;
+    --ink:#d7e3ee; --dim:#7c93a8; --amber:#ffd166; --red:#ff5c5c;
+    --blue:#5aa9e6; --green:#69d58c; --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box; margin:0}
+  body{background:var(--bg); color:var(--ink); font-family:var(--mono); font-size:13px}
+  header{display:flex; align-items:baseline; gap:14px; padding:14px 20px 10px;
+         border-bottom:1px solid var(--line)}
+  header h1{font-size:17px; letter-spacing:.14em; color:#fff}
+  header .sub{color:var(--dim); font-size:11px; letter-spacing:.06em}
+  header .live{margin-left:auto; color:var(--green); font-size:11px}
+  header .live::before{content:"●"; margin-right:6px; animation:blink 1.6s infinite}
+  @keyframes blink{50%{opacity:.25}}
+  @media (prefers-reduced-motion: reduce){ header .live::before{animation:none} }
+
+  #stage{display:grid; grid-template-columns:minmax(340px,46%) 1fr; gap:12px;
+         padding:12px 20px}
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:6px;
+         overflow:hidden}
+  .panel h2{font-size:10px; letter-spacing:.18em; color:var(--dim); padding:8px 12px;
+            border-bottom:1px solid var(--line); font-weight:600}
+  canvas{display:block; width:100%}
+
+  #deck{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+        gap:12px; padding:0 20px 16px}
+  .group{background:var(--panel); border:1px solid var(--line); border-radius:6px;
+         padding:10px 12px 12px}
+  .group h3{font-size:10px; letter-spacing:.18em; color:var(--dim); margin-bottom:9px;
+            font-weight:600}
+  .row{display:flex; align-items:center; gap:8px; margin:7px 0}
+  .row label{flex:0 0 88px; color:var(--dim); font-size:11px}
+  .row output{flex:0 0 74px; text-align:right; color:var(--amber); font-size:11px}
+  input[type=range]{flex:1; accent-color:var(--amber); height:3px}
+  select,button{font-family:var(--mono); font-size:12px; background:var(--panel2);
+    color:var(--ink); border:1px solid var(--line); border-radius:4px; padding:6px 9px}
+  select{width:100%}
+  button{cursor:pointer}
+  button:hover{border-color:var(--amber)}
+  button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--amber); outline-offset:1px}
+  .btnrow{display:flex; gap:8px; flex-wrap:wrap}
+  #telemetry{display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+             background:var(--line)}
+  .tcell{background:var(--panel2); padding:9px 12px}
+  .tcell .v{font-size:19px; color:#fff}
+  .tcell .v.amber{color:var(--amber)}
+  .tcell .u{font-size:10px; color:var(--dim)}
+  .tcell .k{font-size:10px; letter-spacing:.14em; color:var(--dim)}
+  footer{color:var(--dim); font-size:10.5px; padding:0 20px 18px; line-height:1.6}
+  @media (max-width:860px){ #stage{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<header>
+  <h1>VISTA</h1>
+  <span class="sub">REAL-TIME QUARTER-CAR BENCH · RK4 @ 0.25 ms · ECU @ 1 kHz · displacement ×7 for display</span>
+  <span class="live">RUNNING</span>
+</header>
+
+<div id="stage">
+  <div class="panel">
+    <h2>RIG — SPRUNG MASS / DAMPER / UNSPRUNG MASS / TIRE / ROAD</h2>
+    <canvas id="rig" height="340"></canvas>
+    <div id="telemetry">
+      <div class="tcell"><div class="k">BODY ACC RMS</div><div class="v" id="t_rms">0.000</div><div class="u">m/s² · 3 s window</div></div>
+      <div class="tcell"><div class="k">VS PASSIVE</div><div class="v amber" id="t_gain">—</div><div class="u">RMS improvement</div></div>
+      <div class="tcell"><div class="k">DAMPING NOW</div><div class="v" id="t_c">2000</div><div class="u">Ns/m (valve state)</div></div>
+      <div class="tcell"><div class="k">TRAVEL</div><div class="v" id="t_tr">0.0</div><div class="u">mm peak · 3 s</div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>SCOPE — BODY ACCELERATION [m/s²] · DAMPING COMMAND [Ns/m] · ROAD [mm]</h2>
+    <canvas id="scope" height="340"></canvas>
+  </div>
+</div>
+
+<div id="deck">
+  <div class="group">
+    <h3>CONTROLLER</h3>
+    <select id="ctrl">
+      <option value="passive">Passive (fixed damping)</option>
+      <option value="sky2">Skyhook · two-state (bang-bang)</option>
+      <option value="skyc" selected>Skyhook · continuous (clipped)</option>
+      <option value="pid">Digital PID (Kp / Kd, v1.00 tuning)</option>
+    </select>
+    <div class="row" id="r_cpass"><label>c passive</label>
+      <input type="range" id="cpass" min="500" max="4000" step="100" value="2000"><output id="o_cpass">2000</output></div>
+    <div class="row" id="r_csky"><label>c_sky</label>
+      <input type="range" id="csky" min="1000" max="12000" step="500" value="8000"><output id="o_csky">8000</output></div>
+    <div class="row" id="r_kp"><label>Kp</label>
+      <input type="range" id="kp" min="500" max="12000" step="250" value="6000"><output id="o_kp">6000</output></div>
+    <div class="row" id="r_kd"><label>Kd</label>
+      <input type="range" id="kd" min="0" max="200" step="5" value="20"><output id="o_kd">20</output></div>
+  </div>
+
+  <div class="group">
+    <h3>ROAD INPUT</h3>
+    <div class="btnrow">
+      <button id="bump">Speed bump</button>
+      <button id="pothole">Pothole</button>
+    </div>
+    <div class="row"><label>roughness</label>
+      <input type="range" id="rough" min="0" max="100" step="1" value="35"><output id="o_rough">35%</output></div>
+    <div class="row"><label>speed</label>
+      <input type="range" id="speed" min="10" max="80" step="5" value="20"><output id="o_speed">20 km/h</output></div>
+  </div>
+
+  <div class="group">
+    <h3>BENCH</h3>
+    <div class="row"><label>time factor</label>
+      <input type="range" id="tf" min="10" max="200" step="5" value="100"><output id="o_tf">1.00×</output></div>
+    <div class="btnrow">
+      <button id="pause">Pause</button>
+      <button id="reset">Reset states</button>
+    </div>
+    <div class="row" style="margin-top:10px"><label>envelope</label>
+      <output style="flex:1;text-align:left;color:var(--dim)">c ∈ [500, 3000] Ns/m · valve τ = 15 ms · passivity-clipped</output></div>
+  </div>
+</div>
+
+<footer>
+  The physics is identical to the Python bench: quarter-car (mₛ=250 kg, mᵤ=40 kg, kₛ=10 kN/m, kₜ=190 kN/m),
+  fixed-step RK4 integration paced to the wall clock, a 1 kHz discrete controller with zero-order hold, and a
+  semi-active damper that can only dissipate — force requests are clipped to the feasible envelope before the
+  valve slews. Switch controllers while driving to feel the difference the control law makes.
+</footer>
+
+<script>
+"use strict";
+/* ============================ PLANT ==================================== */
+const P = { ms:250, mu:40, ks:10000, kt:190000 };
+const DMP = { cmin:500, cmax:3000, tau:0.015 };
+const DT = 2.5e-4;          // RK4 step [s]
+const TS = 1e-3;            // ECU sample time [s]
+
+let x = [0,0,0,0];          // [zs, vzs, zu, vzu]
+let cActual = 2000;         // valve state
+let cCmd = 2000;
+let simT = 0, ecuAcc = 0;
+
+function deriv(s, fd, zr){
+  const fs = P.ks*(s[0]-s[2]), ft = P.kt*(s[2]-zr);
+  return [ s[1], (-fs-fd)/P.ms, s[3], (fs+fd-ft)/P.mu ];
+}
+function rk4(zr){
+  const f=(s)=>deriv(s, cActual*(s[1]-s[3]), zr);
+  const k1=f(x);
+  const k2=f(x.map((v,i)=>v+.5*DT*k1[i]));
+  const k3=f(x.map((v,i)=>v+.5*DT*k2[i]));
+  const k4=f(x.map((v,i)=>v+DT*k3[i]));
+  x=x.map((v,i)=>v+DT/6*(k1[i]+2*k2[i]+2*k3[i]+k4[i]));
+}
+
+/* ============================ ROAD ===================================== */
+const ui = id=>document.getElementById(id);
+let events = [];            // {t0, h, len} bumps/potholes
+let roughBuf = new Float32Array(1<<17);   // pre-filtered noise loop, 1 kHz
+(function makeRough(){
+  let z=0, seed=42;
+  const rnd=()=>{ seed=(seed*1664525+1013904223)>>>0; return seed/2**32*2-1; };
+  for(let i=0;i<roughBuf.length;i++){ z=0.997*z+0.0018*rnd(); roughBuf[i]=z; }
+})();
+function roadAt(t){
+  const v = (+ui("speed").value)/3.6;
+  let z = (+ui("rough").value)/100 * 1.4 * roughBuf[(Math.round(t*1000)%roughBuf.length+roughBuf.length)%roughBuf.length];
+  for(const e of events){
+    const dur = e.len/v, tau = t-e.t0;
+    if(tau>=0 && tau<=dur) z += e.h*Math.sin(Math.PI*tau/dur);
+  }
+  return z;
+}
+
+/* ========================== CONTROLLERS ================================ */
+const pid = { vf:0, vfp:0, first:true };
+function ecuTick(){
+  const vb=x[1], vrel=x[1]-x[3], mode=ui("ctrl").value;
+  let fReq;
+  if(mode==="passive"){ fReq = (+ui("cpass").value)*vrel; }
+  else if(mode==="sky2"){ fReq = (vb*vrel>0 ? 3000 : 500)*vrel; }
+  else if(mode==="skyc"){ fReq = (+ui("csky").value)*vb; }
+  else { // digital PID, damper-force convention (see v1.00 sign finding)
+    const Kp=+ui("kp").value, Kd=+ui("kd").value, Tf=0.010;
+    const a=TS/(Tf+TS);
+    pid.vfp=pid.vf;
+    if(pid.first){ pid.vf=vb; pid.vfp=vb; pid.first=false; }
+    else pid.vf+=a*(vb-pid.vf);
+    const dvf=(pid.vf-pid.vfp)/TS;
+    fReq = Math.max(-4000, Math.min(4000, Kp*vb + Kd*dvf));
+  }
+  // clipped-optimal passivity law
+  if(mode==="passive"){ cCmd=+ui("cpass").value; }
+  else if(Math.abs(vrel)<1e-4) cCmd=DMP.cmin;
+  else { const c=fReq/vrel; cCmd = c<=0? DMP.cmin : Math.min(Math.max(c,DMP.cmin),DMP.cmax); }
+}
+
+/* ===================== REAL-TIME LOOP + HISTORY ======================== */
+const HIST_S=6, HIST_HZ=200, HN=HIST_S*HIST_HZ;
+const hAcc=new Float32Array(HN), hC=new Float32Array(HN), hRoad=new Float32Array(HN);
+const hAccP=new Float32Array(HN); // shadow passive for live comparison
+let hI=0, hAccT=0;
+let xp=[0,0,0,0];           // shadow passive vehicle on the same road
+
+let paused=false, last=performance.now();
+function frame(now){
+  requestAnimationFrame(frame);
+  let dtw=(now-last)/1000; last=now;
+  if(paused) return;
+  dtw=Math.min(dtw,0.05)*(+ui("tf").value)/100;   // clamp + time factor
+  let n=Math.round(dtw/DT);
+  for(let i=0;i<n;i++){
+    ecuAcc+=DT;
+    if(ecuAcc>=TS-1e-9){ ecuTick(); ecuAcc=0; }
+    cActual += (DT/(DMP.tau+DT))*(cCmd-cActual);
+    const zr=roadAt(simT);
+    rk4(zr);
+    { // shadow passive, fixed 2000
+      const f=(s)=>deriv(s,2000*(s[1]-s[3]),zr);
+      const k1=f(xp),k2=f(xp.map((v,j)=>v+.5*DT*k1[j])),
+            k3=f(xp.map((v,j)=>v+.5*DT*k2[j])),k4=f(xp.map((v,j)=>v+DT*k3[j]));
+      xp=xp.map((v,j)=>v+DT/6*(k1[j]+2*k2[j]+2*k3[j]+k4[j]));
+    }
+    simT+=DT;
+    hAccT+=DT;
+    if(hAccT>=1/HIST_HZ){
+      hAccT=0;
+      const fd=cActual*(x[1]-x[3]);
+      hAcc[hI]=(-P.ks*(x[0]-x[2])-fd)/P.ms;
+      hAccP[hI]=(-P.ks*(xp[0]-xp[2])-2000*(xp[1]-xp[3]))/P.ms;
+      hC[hI]=cActual; hRoad[hI]=roadAt(simT)*1000;
+      hI=(hI+1)%HN;
+    }
+  }
+  events=events.filter(e=>simT-e.t0 < e.len/((+ui("speed").value)/3.6)+1);
+  draw(); telemetry();
+}
+requestAnimationFrame(frame);
+
+/* ============================ DRAWING ================================== */
+const rig=ui("rig"), rc=rig.getContext("2d");
+const scope=ui("scope"), sc=scope.getContext("2d");
+function fit(cv){ const r=cv.getBoundingClientRect();
+  if(cv.width!==Math.round(r.width*devicePixelRatio)){
+    cv.width=Math.round(r.width*devicePixelRatio);
+    cv.height=Math.round(340*devicePixelRatio);
+    cv.getContext("2d").setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  } return r.width; }
+
+const EX=7, PXM=520;        // exaggeration, px per meter
+function drawRig(){
+  const W=fit(rig), H=340, cx=W*0.42, base=H-58;
+  rc.clearRect(0,0,W,H);
+  const y=z=>base - z*EX*PXM;
+
+  // road ribbon: future to the right of the wheel, past to the left
+  const v=(+ui("speed").value)/3.6, pxs=110; // px per meter of road
+  rc.beginPath();
+  for(let px=0;px<=W;px+=3){
+    const tOff=(px-cx)/pxs/v;           // seconds ahead(+)/behind(-)
+    rc.lineTo(px, y(roadAt(simT+tOff)));
+  }
+  rc.strokeStyle="#39536f"; rc.lineWidth=2; rc.stroke();
+  rc.lineTo(W,H); rc.lineTo(0,H); rc.closePath();
+  rc.fillStyle="#101c2a"; rc.fill();
+
+  const zr=roadAt(simT), zu=x[2], zs=x[0];
+  const wheelR=26, uy=y(zu)-wheelR-14, sy=y(zs)-190;
+
+  // tire
+  rc.beginPath(); rc.arc(cx, y(zr)-wheelR, wheelR, 0, 7);
+  rc.strokeStyle="#5aa9e6"; rc.lineWidth=5; rc.stroke();
+  // tire deflection = squash between road contact and unsprung — spokes
+  rc.beginPath(); rc.arc(cx, y(zr)-wheelR, 8, 0, 7); rc.fillStyle="#5aa9e6"; rc.fill();
+
+  // unsprung mass block
+  rc.fillStyle="#22374d"; rc.strokeStyle="#5aa9e6"; rc.lineWidth=1.5;
+  rc.fillRect(cx-34, uy-16, 68, 22); rc.strokeRect(cx-34, uy-16, 68, 22);
+  rc.fillStyle="#8fb8e0"; rc.font="10px "+getComputedStyle(document.body).fontFamily;
+  rc.fillText("mᵤ", cx-8, uy-2);
+
+  // spring (left) — zigzag from unsprung top to sprung bottom
+  const sx1=cx-18, top=sy+96, bot=uy-16, coils=7;
+  rc.beginPath(); rc.moveTo(sx1, bot);
+  for(let i=1;i<=coils;i++){
+    const yy=bot+(top-bot)*i/(coils+0.5);
+    rc.lineTo(sx1+(i%2?12:-12), yy);
+  }
+  rc.lineTo(sx1, top);
+  rc.strokeStyle="#69d58c"; rc.lineWidth=2.5; rc.stroke();
+
+  // damper (right) — cylinder + piston, tint encodes current c
+  const dx=cx+18, mid=(top+bot)/2;
+  const k=(cActual-DMP.cmin)/(DMP.cmax-DMP.cmin);
+  const dampCol=`rgb(${Math.round(120+135*k)},${Math.round(120-40*k)},${Math.round(120-60*k)})`;
+  rc.strokeStyle=dampCol; rc.lineWidth=3;
+  rc.beginPath(); rc.moveTo(dx, bot); rc.lineTo(dx, mid+16); rc.stroke();   // rod low
+  rc.strokeRect(dx-9, mid-26, 18, 42);                                       // cylinder
+  rc.beginPath(); rc.moveTo(dx-9, mid+10); rc.lineTo(dx+9, mid+10); rc.stroke(); // piston
+  rc.beginPath(); rc.moveTo(dx, mid-26); rc.lineTo(dx, top); rc.stroke();   // rod high
+
+  // sprung mass
+  rc.fillStyle="#1c3350"; rc.strokeStyle="#ffd166"; rc.lineWidth=1.5;
+  rc.fillRect(cx-70, sy, 140, 96); rc.strokeRect(cx-70, sy, 140, 96);
+  rc.fillStyle="#ffd166"; rc.fillText("mₛ  SPRUNG MASS", cx-48, sy+52);
+
+  // travel gauge
+  rc.fillStyle="#7c93a8";
+  rc.fillText(`travel ${((zs-zu)*1000).toFixed(1)} mm`, cx+90, (top+bot)/2);
+  rc.fillText(`tire   ${((zu-zr)*1000).toFixed(1)} mm`, cx+90, (top+bot)/2+16);
+}
+
+function series(ctx,arr,x0,w,y0,h,lo,hi,col,i0){
+  ctx.beginPath();
+  for(let i=0;i<HN;i++){
+    const v=arr[(i0+i)%HN];
+    ctx.lineTo(x0+w*i/HN, y0+h-(Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*h);
+  }
+  ctx.strokeStyle=col; ctx.lineWidth=1.4; ctx.stroke();
+}
+function drawScope(){
+  const W=fit(scope), H=340; sc.clearRect(0,0,W,H);
+  const i0=hI, pad=8, w=W-2*pad;
+  sc.strokeStyle="#1b2b3d";
+  [0,113,226].forEach(t=>{ sc.strokeRect(pad,t+6,w,101); });
+  series(sc,hAccP,pad,w,6,101,-8,8,"#54687c",i0);
+  series(sc,hAcc, pad,w,6,101,-8,8,"#ff5c5c",i0);
+  series(sc,hC,  pad,w,119,101,400,3200,"#ffd166",i0);
+  series(sc,hRoad,pad,w,232,101,-60,60,"#5aa9e6",i0);
+  sc.fillStyle="#7c93a8"; sc.font="10px "+getComputedStyle(document.body).fontFamily;
+  sc.fillText("BODY ACC — active (red) vs passive shadow (grey) ±8", pad+4, 18);
+  sc.fillText("DAMPING (valve state) 400–3200", pad+4, 131);
+  sc.fillText("ROAD ±60 mm", pad+4, 244);
+}
+function draw(){ drawRig(); drawScope(); }
+
+/* =========================== TELEMETRY ================================= */
+function rmsWin(arr,i0,secs){
+  const n=Math.min(HN, secs*HIST_HZ); let s=0;
+  for(let i=0;i<n;i++){ const v=arr[(i0-1-i+2*HN)%HN]; s+=v*v; }
+  return Math.sqrt(s/n);
+}
+function telemetry(){
+  const r=rmsWin(hAcc,hI,3), rp=rmsWin(hAccP,hI,3);
+  ui("t_rms").textContent=r.toFixed(3);
+  ui("t_gain").textContent= rp>1e-3 ? ((1-r/rp)*100).toFixed(1)+"%" : "—";
+  ui("t_c").textContent=Math.round(cActual);
+  ui("t_tr").textContent=(Math.abs(x[0]-x[2])*1000).toFixed(1);
+}
+
+/* ============================== UI ===================================== */
+function syncVis(){
+  const m=ui("ctrl").value;
+  ui("r_cpass").style.display = m==="passive"?"flex":"none";
+  ui("r_csky").style.display  = m==="skyc"  ?"flex":"none";
+  ui("r_kp").style.display    = m==="pid"   ?"flex":"none";
+  ui("r_kd").style.display    = m==="pid"   ?"flex":"none";
+  pid.first=true;
+}
+ui("ctrl").addEventListener("change",syncVis); syncVis();
+[["cpass","o_cpass",v=>v],["csky","o_csky",v=>v],["kp","o_kp",v=>v],["kd","o_kd",v=>v],
+ ["rough","o_rough",v=>v+"%"],["speed","o_speed",v=>v+" km/h"],
+ ["tf","o_tf",v=>(v/100).toFixed(2)+"×"]]
+ .forEach(([a,b,f])=>{ const el=ui(a);
+   const up=()=>ui(b).textContent=f(el.value); el.addEventListener("input",up); up(); });
+ui("bump").onclick   =()=>events.push({t0:simT+0.3, h:0.05,  len:0.5});
+ui("pothole").onclick=()=>events.push({t0:simT+0.3, h:-0.06, len:0.7});
+ui("pause").onclick  =()=>{ paused=!paused; ui("pause").textContent=paused?"Resume":"Pause";
+  document.querySelector(".live").textContent=paused?"PAUSED":"RUNNING"; };
+ui("reset").onclick  =()=>{ x=[0,0,0,0]; xp=[0,0,0,0]; cActual=2000; events=[];
+  hAcc.fill(0); hAccP.fill(0); hC.fill(0); hRoad.fill(0); pid.first=true; };
+</script>
+</body>
+</html>
